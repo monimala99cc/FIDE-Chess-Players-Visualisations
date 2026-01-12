@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html>
+	<head>
+		<meta charset='utf-8'>
+		<style type='text/css' media='screen, print'>
+			body  { margin: 30px 50px; font-family: sans-serif; }
+			line, polyline, path {fill: none; }
+		</style>
+		<title>Top 20 countries by player count</title>
+	</head>
+	<body>
+        <h1 class="title">FIDE Chess Players</h1>
+        <h4>Male vs Female active players over years</h4>
+        <div id="chart"></div>
+
+		<script src='../vendor/d3-7.8.5/dist/d3.js'></script>
+		<script>
+
+async function tsvgz(input, row) { // loading gzipped tsv files
+	let blob = await d3.blob(`${input}.gz`);
+	const stream = blob.stream().pipeThrough(new DecompressionStream('gzip'));
+	return d3.tsvParse(await new Response(stream).text(), row);
+}
+	
+
+var body = d3.select('body');
+
+const gender = d3.scaleOrdinal()
+	.domain(['M', 'F'])
+	.range(['♂', '♀']);
+
+let categories = new Map([
+  ['women',   (p, junior_year) => p.sex == 'F'],
+  ['juniors', (p, junior_year) => p.birthyear >= junior_year], // under 18 in that year
+]);
+
+Promise.all([
+	tsvgz('../data/ratings.tsv', d => ({
+		id:     +d['#id'],
+		month:   d.month,
+		rating: +d.rating,
+		games:  +d.games,
+	})),
+
+	d3.tsv('../data/players.tsv', d => ({
+		id:         +d['#id'],
+		name:        d.name,
+		fed:         d.fed,
+		sex:         d.sex,
+		birthyear:  +d.birthyear,
+		max_rating: +d.max_rating,
+		month:       d.month,
+	}))
+]).then(function(datasets) {
+
+  
+	// data
+	let ratings = datasets[0];                         // ratings series
+	let players = d3.index(datasets[1], p => p.id);    // players index
+
+  function yearlyCounts() {
+
+  const byYear = d3.group(ratings, d => +d.month.slice(0, 4)); 
+
+  return Array.from(byYear, ([year, rows]) => {
+
+    const ids = new Set(rows.map(r => r.id));
+
+    let male = 0, female = 0;
+
+    for (const id of ids) {
+      const p = players.get(id);
+      if (!p) continue;
+      if (p.sex === "M") male++;
+      else if (p.sex === "F") female++;
+    }
+
+    return { year, male, female };
+  }).sort((a, b) => d3.ascending(a.year, b.year));
+}
+
+const series = yearlyCounts();
+
+// --- SVG + layout ---
+
+const margin = { top: 70, right: 260, bottom: 80, left: 70 };
+const width  = 1100;
+const height = 500;
+const innerWidth  = width - margin.left - margin.right;
+const innerHeight = height - margin.top - margin.bottom;
+
+const svg = d3.select("#chart")
+  .append("svg")
+  .attr("width", width)
+  .attr("height", height);
+
+const g = svg.append("g")
+  .attr("transform", `translate(${margin.left},${margin.top})`);
+
+// --- Scales ---
+const x = d3.scaleLinear().range([0, innerWidth]);
+const y = d3.scaleLinear().range([innerHeight, 0]);
+
+// --- Axes ---
+const xAxisG = g.append("g")
+  .attr("transform", `translate(0,${innerHeight})`);
+
+const yAxisG = g.append("g");
+
+
+// Y label
+svg.append("text")
+  .attr("x", -(margin.top + innerHeight / 2))
+  .attr("y", 13)
+  .attr("transform", "rotate(-90)")
+  .attr("text-anchor", "middle")
+  .text("Number of players");
+
+// X label
+svg.append("text")
+  .attr("x", margin.left + innerWidth / 2)
+  .attr("y", height - 10)
+  .attr("text-anchor", "middle")
+  .text("Year");
+
+x.domain(d3.extent(series, d => d.year));
+y.domain([0, d3.max(series, d => Math.max(d.male, d.female))]).nice();
+
+xAxisG.call(d3.axisBottom(x).tickFormat(d3.format("d"))); 
+yAxisG.call(d3.axisLeft(y));
+
+// --- Line Generaators ---
+const lineMale = d3.line()
+  .x(d => x(d.year))
+  .y(d => y(d.male));
+
+const lineFemale = d3.line()
+  .x(d => x(d.year))
+  .y(d => y(d.female));
+
+// --- Drawing Lines ---
+g.append("path")
+  .datum(series)
+  .attr("fill", "none")
+  .attr("stroke", "#2563eb")   
+  .attr("stroke-width", 2.5)
+  .attr("d", lineMale);
+
+g.append("path")
+  .datum(series)
+  .attr("fill", "none")
+  .attr("stroke", "#ec4899") 
+  .attr("stroke-width", 2.5)
+  .attr("d", lineFemale);
+
+  // --- Legend ---
+const legend = svg.append("g")
+  .attr(
+    "transform",
+    `translate(${margin.left + innerWidth + 20}, ${margin.top - 35})`
+  );
+
+// Male legend
+legend.append("line")
+  .attr("x1", 0)
+  .attr("x2", 20)
+  .attr("y1", 10)
+  .attr("y2", 10)
+  .attr("stroke", "#2563eb")
+  .attr("stroke-width", 3);
+
+legend.append("text")
+  .attr("x", 30)
+  .attr("y", 14)
+  .text("Male players")
+  .attr("font-size", 12)
+  .attr("alignment-baseline", "middle");
+
+// Female legend
+legend.append("line")
+  .attr("x1", 0)
+  .attr("x2", 20)
+  .attr("y1", 30)
+  .attr("y2", 30)
+  .attr("stroke", "#ec4899")
+  .attr("stroke-width", 3);
+
+legend.append("text")
+  .attr("x", 30)
+  .attr("y", 34)
+  .text("Female players")
+  .attr("font-size", 12)
+  .attr("alignment-baseline", "middle");
+
+
+// --- Tooltip Focus group ---
+const focus = g.append("g").style("display", "none");
+
+focus.append("line")
+  .attr("y1", 0)
+  .attr("y2", innerHeight)
+  .attr("stroke", "#999")
+  .attr("stroke-dasharray", "3,3");
+
+const dotM = focus.append("circle").attr("r", 4).attr("fill", "#2563eb");
+const dotF = focus.append("circle").attr("r", 4).attr("fill", "#ef4444");
+
+const label = focus.append("text")
+  .attr("x", 10)
+  .attr("y", -10)
+  .attr("font-size", 12);
+
+const bisectYear = d3.bisector(d => d.year).left;
+
+g.append("rect")
+  .attr("fill", "transparent")
+  .attr("width", innerWidth)
+  .attr("height", innerHeight)
+  .on("mouseenter", () => focus.style("display", null))
+  .on("mouseleave", () => focus.style("display", "none"))
+  .on("mousemove", (event) => {
+    const [mx] = d3.pointer(event);
+    const year = Math.round(x.invert(mx));
+
+    const i = bisectYear(series, year);
+    const d0 = series[Math.max(0, Math.min(series.length - 1, i))];
+
+    // --- vertical line ---
+    focus.select("line")
+      .attr("transform", `translate(${x(d0.year)},0)`);
+
+    // dots
+    dotM.attr("cx", x(d0.year)).attr("cy", y(d0.male));
+    dotF.attr("cx", x(d0.year)).attr("cy", y(d0.female));
+
+    label
+      .attr("transform", `translate(${x(d0.year)},${Math.min(y(d0.male), y(d0.female))})`)
+      .text(`${d0.year}  M: ${d0.male}  F: ${d0.female}`);
+  });
+});
+
+		</script>
+	</body>
+</html>

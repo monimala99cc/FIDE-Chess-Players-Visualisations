@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html>
+	<head>
+		<meta charset='utf-8'>
+		<style type='text/css' media='screen, print'>
+			body  { margin: 30px 50px; font-family: sans-serif; }
+			line, polyline{ stroke: black; fill: none; }
+            #tooltip {
+            position: absolute;
+            pointer-events: none;
+            background: white;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+            padding: 6px 8px;
+            font-size: 12px;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+            opacity: 0;}
+		</style>
+		<title></title>
+	</head>
+	<body>
+
+    <h1 class="title">FIDE Chess Players</h1>
+    <h4>Global Distribution of Chess Players over the years
+    </h4> 
+
+    <div id="controls">
+    <label>Category:</label>
+
+    <select id="category">
+    <option value="women">Women</option>
+    <option value="juniors">Under-18</option>
+    </select>
+
+    <label style="margin-left:14px;">Year:</label>
+    <input type="range" id="yearSlider" min="2015" max="2025" step="1" value="2015">
+    <span id="yearLabel">2015</span>
+    </div>
+
+    <div id="chart"></div>
+    <div id="tooltip"></div>
+
+	<script src='../vendor/d3-7.8.5/dist/d3.js'></script>
+	<script>
+
+// Helper function loading gzipped tsv files
+async function tsvgz(input, row) { 
+	let blob = await d3.blob(`${input}.gz`);
+	const stream = blob.stream().pipeThrough(new DecompressionStream('gzip'));
+	return d3.tsvParse(await new Response(stream).text(), row);
+}
+
+//Category filters (women and Juniors)
+let categories = new Map([
+  ['women',   (p, junior_year) => p.sex == 'F'],
+  ['juniors', (p, junior_year) => p.birthyear >= junior_year], 
+]);
+
+Promise.all([
+	tsvgz('../data/ratings.tsv', d => ({
+		id:     +d['#id'],
+		month:   d.month,
+		rating: +d.rating,
+		games:  +d.games,
+	})),
+
+	d3.tsv('../data/players.tsv', d => ({
+		id:         +d['#id'],
+		name:        d.name,
+		fed:         d.fed,
+		sex:         d.sex,
+		birthyear:  +d.birthyear,
+		max_rating: +d.max_rating,
+		month:       d.month,
+	})),
+	
+	d3.tsv('../data/countries.tsv', d => ({
+		country:   d['#country'],
+		iso3:      d.alpha3,
+		fed:       d.ioc,
+	})),
+
+    d3.json("../data/world.geojson"),
+	
+]).then(function(datasets) {
+
+  
+	// data
+	let ratings = datasets[0];                         // ratings series
+	let players = d3.index(datasets[1], p => p.id);    // players index
+	let countries = d3.index(datasets[2], c => c.fed); // countries index
+    let world = datasets[3];	
+
+    //SVG 
+    const margin = { top: 20, right: 20, bottom: 80, left: 70 };
+    const width  = 900;
+    const height = 450;
+
+    const svg = d3.select("#chart")
+    .append("svg")
+    .attr("width", width)
+    .attr("height", height);
+
+    const g = svg.append("g")
+    .attr("transform", `translate(${margin.left},${margin.top})`);
+
+    const innerWidth  = width - margin.left - margin.right;
+    const innerHeight = height - margin.top - margin.bottom;
+
+    const projection = d3.geoNaturalEarth1().fitSize([innerWidth, innerHeight], world);
+
+    const path = d3.geoPath(projection);
+        
+    // Draw map
+    g.selectAll("path.country")
+    .data(world.features)
+    .join("path")
+    .attr("class", "country")
+    .attr("d", path)
+    .attr("fill", "#e5e7eb")
+    .attr("stroke", "#999")
+    .attr("stroke-width", 0.5);
+
+    //Mapping ISO3 with country name map for tooltip
+    const countryNameByIso3 = new Map(
+    datasets[2].filter(c => c.iso3).map(c => [c.iso3, c.country]));
+
+
+    //Given year and category compute: #active players from each country
+
+    function countryCountsForYear(year, category) {
+
+    const categoryFilter = categories.get(category);
+    const active = ratings.filter(d => d.month.startsWith(String(year)));
+
+    const activeIds = new Set(
+        active.filter(d => {
+        const p = players.get(d.id);
+        return p && categoryFilter(p, year - 18);
+    }).map(d => d.id)
+  );
+
+  // group by country
+    const counts = d3.rollups(
+        Array.from(activeIds, id => players.get(id)),
+        P => P.length,
+        p => countries.get(p.fed)?.iso3 ?? null
+  );
+
+    return counts
+    .filter(([iso3]) => iso3 !== null)
+    .map(([iso3, count]) => ({
+    iso3,
+    count,
+    country: countryNameByIso3.get(iso3) ?? iso3
+    }));
+
+}
+
+    const r = d3.scaleSqrt()
+                .range([2, 35]);
+
+    const tooltip = d3.select("#tooltip");
+
+    let currentYear = 2015;
+    let currentCategory = "women";
+
+    //optimization :precompute the centroids of the countries
+    const centroidMap = new Map();
+    world.features.forEach(feature => {
+    if(feature.geometry) {
+        centroidMap.set(feature.id, projection(d3.geoCentroid(feature)));
+    }
+    });
+
+    function updateMap(year, category) {
+
+        // Get the data
+        let data = countryCountsForYear(year, category);
+
+        data = data.filter(d => centroidMap.has(d.iso3));
+
+        // FILTER: Remove countries that don't exist in the map data (world.features)
+        data = data.filter(d => world.features.find(w => w.id === d.iso3));
+
+        // Update the radius scale
+        r.domain([0, d3.max(data, d => d.count)]);
+
+        // Draw/Update circles
+        g.selectAll("circle.bubble")
+         .data(data, d => d.iso3)
+         .join(
+            enter => enter.append("circle")
+               .attr("class", "bubble")
+               .attr("cx", d => centroidMap.get(d.iso3)[0])
+               .attr("cy", d => centroidMap.get(d.iso3)[1]) 
+               .attr("r", 0)
+               .attr("fill", "#f472b6")
+               .attr("stroke-width", 0.5)
+               .attr("opacity", 0.7)
+               .on("mouseenter", (event, d) => {
+                   tooltip
+                   .style("opacity", 1)
+                   .html(`
+                       <strong>${d.country}</strong><br/>
+                       ${currentCategory === "women" ? "Women players" : "Under-18 players"}<br/>
+                       Count: ${d.count.toLocaleString()}<br/>
+                       Year: ${currentYear}
+                   `);
+               })
+               .on("mousemove", (event) => {
+                   tooltip
+                   .style("left", (event.pageX + 12) + "px")
+                   .style("top", (event.pageY - 28) + "px");
+               })
+               .on("mouseleave", () => {
+                   tooltip.style("opacity", 0);
+               })
+               .transition()
+               .attr("r", d => r(d.count)),
+
+            update => update
+                .transition()
+                .attr("r", d => r(d.count)),
+
+            exit => exit
+                .transition()
+                .attr("r", 0)
+                .remove()
+        );
+    };
+    
+    updateMap(currentYear, currentCategory);
+
+    // slider
+    const slider = d3.select("#yearSlider");
+    const yearLabel = d3.select("#yearLabel");
+
+    slider.on("input", function () {
+          currentYear = +this.value;
+          yearLabel.text(currentYear);
+          updateMap(currentYear, currentCategory);
+    });
+
+    // dropdown
+    d3.select("#category").on("change", function () {
+          currentCategory = this.value;
+          updateMap(currentYear, currentCategory);
+    });
+
+});
+		</script>
+	</body>
+</html>
