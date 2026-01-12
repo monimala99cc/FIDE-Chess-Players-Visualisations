@@ -3,23 +3,19 @@
 ## Project Structure
 
 project-root/
-│
 ├── viz/
 │   ├── line_graph.html
 │   ├── bar_graph.html
 │   └── bubble_worldmap.html
-│
 ├── data/
 │   ├── ratings.tsv.gz
 │   ├── players.tsv
 │   ├── countries.tsv
-│   └── world.geojson 
-│
+│   └── world.geojson
 ├── vendor/
-│   
-│       
-│   
+│   └── d3-7.8.5/
 └── README.md
+
 
 ## Dependency
 
